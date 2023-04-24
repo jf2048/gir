@@ -132,6 +132,7 @@ impl Library {
             match elem.name() {
                 "class" => self.read_class(parser, ns_id, elem),
                 "record" => self.read_record_start(parser, ns_id, elem),
+                "boxed" => self.read_boxed(parser, ns_id, elem),
                 "union" => self.read_named_union(parser, ns_id, elem),
                 "interface" => self.read_interface(parser, ns_id, elem),
                 "callback" => self.read_named_callback(parser, ns_id, elem),
@@ -140,7 +141,7 @@ impl Library {
                 "function" => self.read_global_function(parser, ns_id, elem),
                 "constant" => self.read_constant(parser, ns_id, elem),
                 "alias" => self.read_alias(parser, ns_id, elem),
-                "boxed" | "function-macro" | "docsection" => parser.ignore_element(),
+                "function-macro" | "docsection" => parser.ignore_element(),
                 _ => {
                     warn!("<{} name={:?}>", elem.name(), elem.attr("name"));
                     parser.ignore_element()
@@ -396,6 +397,57 @@ impl Library {
         });
 
         Ok(Some(typ))
+    }
+
+    fn read_boxed(
+        &mut self,
+        parser: &mut XmlParser<'_>,
+        ns_id: u16,
+        elem: &Element,
+    ) -> Result<(), String> {
+        let boxed_name = elem.attr_required("name")?;
+        // Records starting with `_` are intended to be private and should not be bound
+        if boxed_name.starts_with('_') {
+            parser.ignore_element()?;
+            return Ok(());
+        }
+        let g_type = elem.attr_required("type-name")?;
+        let get_type = elem.attr_required("get-type")?;
+        let version = self.read_version(parser, ns_id, elem)?;
+        let deprecated_version = self.read_deprecated_version(parser, ns_id, elem)?;
+
+        let mut fns = Vec::new();
+        let mut doc = None;
+        let mut doc_deprecated = None;
+
+        parser.elements(|parser, elem| match elem.name() {
+            "function" => {
+                self.read_function_to_vec(parser, ns_id, elem, &mut fns)
+            }
+            "doc" => parser.text().map(|t| doc = Some(t)),
+            "doc-deprecated" => parser.text().map(|t| doc_deprecated = Some(t)),
+            "source-position" => parser.ignore_element(),
+            "attribute" => parser.ignore_element(),
+            _ => Err(parser.unexpected_element(elem)),
+        })?;
+
+        let typ = Type::Record(Record {
+            name: boxed_name.into(),
+            c_type: g_type.into(),
+            glib_get_type: Some(get_type.into()),
+            gtype_struct_for: Some(g_type.into()),
+            fields: Vec::new(),
+            functions: fns,
+            version,
+            deprecated_version,
+            doc,
+            doc_deprecated,
+            disguised: false,
+            symbol_prefix: None,
+        });
+        self.add_type(ns_id, boxed_name, typ);
+
+        Ok(())
     }
 
     fn read_named_union(
